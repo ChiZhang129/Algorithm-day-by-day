@@ -10,7 +10,32 @@
             --bg-color: #f6f8fa;
             --card-bg: #ffffff;
         }
+/* 创建一个覆盖全屏的背景层 */
+body::before {
+    content: "";
+    position: fixed; /* 固定背景，不随滚动条滚动 */
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    
+    /* 核心设置：背景图片 */
+    background-image: url('assets/capybara.png'); /* 这里换成你的图片路径 */
+    background-repeat: repeat;    /* 均匀重复分布 */
+    background-size: 150px;       /* 调整水豚的大小 */
+    
+    /* 设置透明度 (0.1 是 10% 透明度，你可以根据需要调整) */
+    opacity: 0.15; 
+    
+    z-index: -1; /* 确保背景在文字下面 */
+    pointer-events: none; /* 确保不会干扰点击网页上的链接 */
+}
 
+/* 确保 body 是相对定位，方便伪元素定位 */
+body {
+    position: relative;
+    min-height: 100vh;
+}
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             background-color: var(--bg-color);
@@ -108,4 +133,5 @@
     </main>
 
 </body>
+
 </html>
