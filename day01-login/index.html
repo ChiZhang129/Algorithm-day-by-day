@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>矩形迷宫蚁群 (保证通路版)</title>
+    <style>
+        body { background: #000; color: #ccc; font-family: 'Consolas', monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        canvas { background: #000; box-shadow: 0 0 50px #111; image-rendering: pixelated; border: 1px solid #333; }
+        .ui { margin-bottom: 15px; display: flex; gap: 20px; align-items: center; background: #151515; padding: 12px 24px; border-radius: 8px; border: 1px solid #333;}
+        button { padding: 10px 20px; background: #2c8756; color: #fff; border: none; cursor: pointer; border-radius: 4px; font-family: inherit; font-size: 14px; font-weight: bold;}
+        button:hover { background: #3bb373; }
+        .status { font-size: 12px; color: #888; width: 120px; text-align: right;}
+    </style>
+</head>
+<body>
+
+    <div class="ui">
+        <div style="color:#fff; font-weight:bold; font-size: 16px;">CITY ACO v6.0</div>
+        <button onclick="generateValidMap()">生成矩形地形 (Reset)</button>
+        <div id="statusText" class="status">Ready</div>
+    </div>
+
+    <canvas id="simCanvas" width="600" height="600"></canvas>
+
+<script>
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const statusText = document.getElementById('statusText');
+
+// --- 参数配置 ---
+const SIZE = 200;           
+const SCALE = 3;            
+const ANT_COUNT = 500;     
+const EVAPORATION = 0.985;  
+const DEPOSIT = 1.0;        
+const ANT_SPEED = 0.6;      // 慢速
+const SENSOR_DIST = 9;      
+const TURN_SPEED = 0.4;     
+
+// 障碍物参数
+const BLOCK_COUNT = 60;     // 矩形数量
+const MIN_BLOCK_SIZE = 5;   // 最小边长
+const MAX_BLOCK_SIZE = 25;  // 最大边长
+
+// 全局数据
+let walls = new Uint8Array(SIZE * SIZE);
+let pFood = new Float32Array(SIZE * SIZE);
+let pHome = new Float32Array(SIZE * SIZE);
+let ants = [];
+
+const HOME = { x: 20, y: 20, r: 10 };
+const FOOD = { x: 180, y: 180, r: 10 };
+
+// --- 蚂蚁类 ---
+class Ant {
+    constructor() {
+        this.reset();
+    }
+    
+    reset() {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.random() * 5;
+        this.x = HOME.x + Math.cos(a) * r;
+        this.y = HOME.y + Math.sin(a) * r;
+        this.angle = Math.random() * Math.PI * 2;
+        this.hasFood = false; 
+    }
+
+    update() {
+        const targetMap = this.hasFood ? pHome : pFood;
+        const wL = this.sense(targetMap, -Math.PI / 3);
+        const wF = this.sense(targetMap, 0);
+        const wR = this.sense(targetMap, Math.PI / 3);
+
+        const randomSteer = (Math.random() - 0.5) * 0.1;
+        if (wF > wL && wF > wR) {
+            this.angle += randomSteer;
+        } else if (wF < wL && wF < wR) {
+            this.angle += (Math.random() - 0.5) * 2; 
+        } else if (wL > wR) {
+            this.angle -= TURN_SPEED + randomSteer;
+        } else if (wR > wL) {
+            this.angle += TURN_SPEED + randomSteer;
+        }
+
+        const nx = this.x + Math.cos(this.angle) * ANT_SPEED;
+        const ny = this.y + Math.sin(this.angle) * ANT_SPEED;
+
+        if (this.isWall(nx, ny)) {
+            this.angle = this.angle + Math.PI + (Math.random()-0.5); 
+        } else {
+            this.x = nx;
+            this.y = ny;
+        }
+
+        const idx = Math.floor(this.y) * SIZE + Math.floor(this.x);
+        if (idx >= 0 && idx < SIZE*SIZE) {
+            if (this.hasFood) {
+                pFood[idx] = Math.min(3.0, pFood[idx] + DEPOSIT);
+            } else {
+                pHome[idx] = Math.min(3.0, pHome[idx] + DEPOSIT);
+            }
+        }
+
+        const dFood = Math.hypot(this.x - FOOD.x, this.y - FOOD.y);
+        const dHome = Math.hypot(this.x - HOME.x, this.y - HOME.y);
+
+        if (!this.hasFood && dFood < FOOD.r) {
+            this.hasFood = true; 
+            this.angle += Math.PI; 
+        } else if (this.hasFood && dHome < HOME.r) {
+            this.hasFood = false; 
+            this.angle += Math.PI; 
+        }
+    }
+
+    sense(map, offset) {
+        const a = this.angle + offset;
+        const tx = Math.floor(this.x + Math.cos(a) * SENSOR_DIST);
+        const ty = Math.floor(this.y + Math.sin(a) * SENSOR_DIST);
+        if (this.isWall(tx, ty)) return -1; 
+        return map[ty * SIZE + tx];
+    }
+
+    isWall(x, y) {
+        if (x < 1 || x >= SIZE-1 || y < 1 || y >= SIZE-1) return true;
+        return walls[Math.floor(y) * SIZE + Math.floor(x)] === 1;
+    }
+}
+
+// --- 核心：生成矩形地形并验证连通性 ---
+function generateValidMap() {
+    let attempts = 0;
+    let valid = false;
+
+    // 循环尝试生成，直到找到一个通路的地图
+    while (!valid && attempts < 100) {
+        attempts++;
+        statusText.innerText = `Generating... (${attempts})`;
+        
+        // 1. 清空墙壁
+        walls = new Uint8Array(SIZE * SIZE);
+        
+        // 2. 随机放置长方形
+        for (let i = 0; i < BLOCK_COUNT; i++) {
+            const w = Math.floor(MIN_BLOCK_SIZE + Math.random() * (MAX_BLOCK_SIZE - MIN_BLOCK_SIZE));
+            const h = Math.floor(MIN_BLOCK_SIZE + Math.random() * (MAX_BLOCK_SIZE - MIN_BLOCK_SIZE));
+            const x = Math.floor(Math.random() * (SIZE - w));
+            const y = Math.floor(Math.random() * (SIZE - h));
+            
+            // 填充矩形
+            for (let by = y; by < y + h; by++) {
+                for (let bx = x; bx < x + w; bx++) {
+                    if (bx >= 0 && bx < SIZE && by >= 0 && by < SIZE) {
+                        walls[by * SIZE + bx] = 1;
+                    }
+                }
+            }
+        }
+
+        // 3. 清理出生点和终点
+        clearCircle(HOME.x, HOME.y, 15);
+        clearCircle(FOOD.x, FOOD.y, 15);
+
+        // 4. 洪水填充 (Flood Fill) 检查通路
+        if (checkConnectivity()) {
+            valid = true;
+            statusText.innerText = `Success!`;
+        }
+    }
+
+    if (!valid) {
+        statusText.innerText = "Failed (Retry)";
+        alert("无法生成连通地图，请重试。");
+        return;
+    }
+
+    // 重置气味和蚂蚁
+    pFood = new Float32Array(SIZE * SIZE);
+    pHome = new Float32Array(SIZE * SIZE);
+    ants = [];
+    for (let i = 0; i < ANT_COUNT; i++) ants.push(new Ant());
+}
+
+// BFS 寻路检查：只返回 True/False
+function checkConnectivity() {
+    const visited = new Uint8Array(SIZE * SIZE);
+    const queue = [];
+    
+    // 起点
+    const startX = Math.floor(HOME.x);
+    const startY = Math.floor(HOME.y);
+    const startIdx = startY * SIZE + startX;
+    
+    // 目标
+    const endX = Math.floor(FOOD.x);
+    const endY = Math.floor(FOOD.y);
+    
+    queue.push(startIdx);
+    visited[startIdx] = 1;
+    
+    let head = 0;
+    while(head < queue.length) {
+        const curr = queue[head++];
+        const cx = curr % SIZE;
+        const cy = Math.floor(curr / SIZE);
+        
+        // 到达目标？
+        // 只要进入 Food 半径范围内就算通
+        if (Math.hypot(cx - endX, cy - endY) < FOOD.r) {
+            return true;
+        }
+        
+        // 4方向遍历
+        const neighbors = [curr-1, curr+1, curr-SIZE, curr+SIZE];
+        for (let next of neighbors) {
+            const nx = next % SIZE;
+            const ny = Math.floor(next / SIZE);
+            
+            if (nx >= 0 && nx < SIZE && ny >= 0 && ny < SIZE) {
+                if (visited[next] === 0 && walls[next] === 0) {
+                    visited[next] = 1;
+                    queue.push(next);
+                }
+            }
+        }
+    }
+    return false; // 队列空了也没找到
+}
+
+function clearCircle(cx, cy, r) {
+    for (let y = cy - r; y <= cy + r; y++) {
+        for (let x = cx - r; x <= cx + r; x++) {
+            if ((x-cx)**2 + (y-cy)**2 <= r*r) {
+                if(x>0 && x<SIZE && y>0 && y<SIZE) walls[y*SIZE+x] = 0;
+            }
+        }
+    }
+}
+
+// --- 渲染循环 ---
+const imgData = ctx.createImageData(SIZE * SCALE, SIZE * SCALE);
+const buf32 = new Uint32Array(imgData.data.buffer);
+
+function loop() {
+    // 挥发
+    for (let i = 0; i < SIZE * SIZE; i++) {
+        pFood[i] *= EVAPORATION;
+        pHome[i] *= EVAPORATION;
+        if(pFood[i]<0.005) pFood[i]=0;
+        if(pHome[i]<0.005) pHome[i]=0;
+    }
+
+    for (let ant of ants) ant.update();
+
+    buf32.fill(0xFF000000); 
+    const data = imgData.data;
+
+    for (let y = 0; y < SIZE; y++) {
+        for (let x = 0; x < SIZE; x++) {
+            const idx = y * SIZE + x;
+            
+            // 墙 (矩形块)
+            if (walls[idx] === 1) {
+                drawBlock(x, y, 50, 50, 50, data);
+                continue;
+            }
+
+            // 气味
+            const r = Math.min(255, pFood[idx] * 180);
+            const b = Math.min(255, pHome[idx] * 180);
+            if (r > 5 || b > 5) {
+                drawBlock(x, y, r*0.7, (r+b)*0.1, b*0.7, data);
+            }
+        }
+    }
+
+    // 蚂蚁
+    for (let ant of ants) {
+        const sx = Math.floor(ant.x * SCALE);
+        const sy = Math.floor(ant.y * SCALE);
+        let r, g, b;
+        if (ant.hasFood) { r=255; g=60; b=60; } 
+        else { r=60; g=160; b=255; } 
+
+        drawPixel(sx, sy, r, g, b, data);
+        drawPixel(sx+1, sy, r, g, b, data);
+        drawPixel(sx, sy+1, r, g, b, data);
+        drawPixel(sx+1, sy+1, r, g, b, data);
+    }
+
+    drawMarker(HOME.x, HOME.y, HOME.r, 0, 255, 0, data);   
+    drawMarker(FOOD.x, FOOD.y, FOOD.r, 255, 255, 0, data); 
+
+    ctx.putImageData(imgData, 0, 0);
+    requestAnimationFrame(loop);
+}
+
+function drawPixel(sx, sy, r, g, b, data) {
+    if (sx < 0 || sx >= SIZE*SCALE || sy < 0 || sy >= SIZE*SCALE) return;
+    const idx = (sy * (SIZE*SCALE) + sx) * 4;
+    data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = 255;
+}
+
+function drawBlock(x, y, r, g, b, data) {
+    const startX = x * SCALE;
+    const startY = y * SCALE;
+    const stride = SIZE * SCALE;
+    for (let dy = 0; dy < SCALE; dy++) {
+        const rowOffset = (startY + dy) * stride;
+        for (let dx = 0; dx < SCALE; dx++) {
+            const idx = (rowOffset + (startX + dx)) * 4;
+            data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = 255;
+        }
+    }
+}
+
+function drawMarker(cx, cy, r, red, green, blue, data) {
+    const scx = cx * SCALE;
+    const scy = cy * SCALE;
+    const sr = r * SCALE;
+    const stride = SIZE * SCALE;
+    const minX = Math.max(0, Math.floor(scx - sr));
+    const maxX = Math.min(stride, Math.ceil(scx + sr));
+    const minY = Math.max(0, Math.floor(scy - sr));
+    const maxY = Math.min(stride, Math.ceil(scy + sr));
+
+    for(let y=minY; y<maxY; y++) {
+        for(let x=minX; x<maxX; x++) {
+            if((x-scx)**2 + (y-scy)**2 <= sr*sr) {
+                const idx = (y*stride+x)*4;
+                data[idx] = red; data[idx+1] = green; data[idx+2] = blue; data[idx+3] = 255;
+            }
+        }
+    }
+}
+
+// 启动
+generateValidMap();
+loop();
+</script>
+</body>
+</html>
